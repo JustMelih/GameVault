@@ -1,0 +1,33 @@
+﻿@model IEnumerable<OyunIndirCom.Models.VideoGames>
+@{
+    Layout = "_Layout"; ViewData["Title"] = "All Games";
+}
+@addTagHelper *, Microsoft.AspNetCore.Mvc.TagHelpers
+
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h1>Video Games</h1>
+    <a asp-controller="VideoGames" asp-action="Create" class="btn btn-primary">Create New</a>
+</div>
+
+<table class="table table-striped">
+    @Html.AntiForgeryToken()
+    <thead>
+        <tr><th>Title</th><th>Image</th><th></th></tr>
+    </thead>
+    <tbody>
+        @foreach (var g in Model)
+        {
+            <tr>
+                <td>@g.Title</td>
+                <td>
+                    <img src="@g.ImageUrl" alt="@g.Title" style="height:50px;" />
+                </td>
+                <td>
+                    <a asp-action="Details" asp-route-id="@g.Id" class="btn btn-sm btn-info">View</a>
+                    <a asp-action="Edit" asp-route-id="@g.Id" class="btn btn-sm btn-secondary">Edit</a>
+                    <a asp-action="Delete" asp-route-id="@g.Id" class="btn btn-sm btn-danger">Delete</a>
+                </td>
+            </tr>
+        }
+    </tbody>
+</table>

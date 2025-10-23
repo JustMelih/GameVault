@@ -1,0 +1,51 @@
+﻿@model OyunIndirCom.Models.VideoGames
+@{
+    Layout = "_Layout"; ViewData["Title"] = "Edit Game";
+}
+
+<h1>Edit Game</h1>
+<form asp-action="Edit" method="post" class="mt-4">
+    @Html.AntiForgeryToken()
+    <input type="hidden" asp-for="Id" />
+    <div class="mb-3">
+        <label asp-for="Title" class="form-label"></label>
+        <input asp-for="Title" class="form-control" />
+        <span asp-validation-for="Title" class="text-danger"></span>
+    </div>
+    <div class="mb-3">
+        <label asp-for="Description" class="form-label"></label>
+        <input asp-for="Description" class="form-control" />
+        <span asp-validation-for="Description" class="text-danger"></span>
+    </div>
+    <div class="mb-3">
+        <label asp-for="GameSize" class="form-label"></label>
+        <input asp-for="GameSize" class="form-control" />
+        <span asp-validation-for="GameSize" class="text-danger"></span>
+    </div>
+    <div class="mb-3">
+        <label asp-for="GameType" class="form-label"></label>
+        <input asp-for="GameType" class="form-control" />
+        <span asp-validation-for="GameType" class="text-danger"></span>
+    </div>
+    <div class="mb-3">
+        <label asp-for="Downloads" class="form-label"></label>
+        <input asp-for="Downloads" class="form-control" />
+        <span asp-validation-for="Downloads" class="text-danger"></span>
+    </div>
+    <div class="mb-3">
+        <label asp-for="ReleaseDate" class="form-label"></label>
+        <input asp-for="ReleaseDate" class="form-control" />
+        <span asp-validation-for="ReleaseDate" class="text-danger"></span>
+    </div>
+    <div class="mb-3">
+        <label asp-for="ImageUrl" class="form-label"></label>
+        <input asp-for="ImageUrl" class="form-control" />
+        <span asp-validation-for="ImageUrl" class="text-danger"></span>
+    </div>
+    <button type="submit" class="btn btn-primary">Update</button>
+    <a asp-action="Index" class="btn btn-link">Cancel</a>
+</form>
+
+@section Scripts {
+    <partial name="_ValidationScriptsPartial" />
+}
