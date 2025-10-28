@@ -1,0 +1,118 @@
+﻿@* Basit bir arama bileşeni. Henüz backend’e bağlanmıyor. *@
+<div id="ai-search" class="ai-search">
+    <form id="ai-form">
+        <input id="ai-query"
+               type="text"
+               placeholder="Ne oynamak istersin? Örn: 'ortaçağ, ejderha şart; büyücü olmasın'"
+               autocomplete="off" />
+        <button type="submit">Find Games</button>
+    </form>
+
+    <div id="ai-status" class="ai-status"></div>
+    <div id="ai-results" class="ai-results"></div>
+</div>
+
+<style>
+    /* Bileşenin kutusu: ortalanmış, koyu tema kutu. */
+    .ai-search {
+        max-width: 980px;
+        margin: 24px auto;
+        padding: 16px;
+        border-radius: 16px;
+        background: #111;
+        box-shadow: 0 6px 18px rgba(0,0,0,.12);
+    }
+
+        /* Metin kutusu: geniş, koyu arkaplan, okunaklı yazı rengi. */
+        .ai-search input {
+            width: 100%;
+            padding: 14px 16px;
+            border-radius: 12px;
+            border: 1px solid #333;
+            background: #1a1a1a;
+            color: #eee;
+            font-size: 16px;
+        }
+
+        /* Buton: belirgin, tıklaması kolay. */
+        .ai-search button {
+            display: block; /* makes button a block element */
+            margin: 8px auto; /* auto horizontally centers it */
+            padding: 10px 14px;
+            border-radius: 10px;
+            border: 2px solid #e63946;
+            background: #111;
+            color: #e63946;
+            font-weight: 700;
+            cursor: pointer;
+            transition: all 0.25s ease;
+        }
+
+
+            .ai-search button:hover {
+                background: #e63946; /* fill red on hover */
+                color: #111; /* dark text inside */
+                box-shadow: 0 0 10px #e63946aa; /* glowing red border */
+                transform: translateY(-1px); /* slight lift effect */
+            }
+
+            .ai-search button:active {
+                transform: translateY(0); /* remove lift */
+                box-shadow: 0 0 4px #e63946; /* subtler glow */
+            }
+
+    /* Durum metni: “Searching…”, hata vb. gösterilecek alan. */
+    .ai-status {
+        margin-top: 8px;
+        color: #aaa;
+        font-size: 14px;
+    }
+
+    /* Sonuçlar: şimdilik boş; ileride kartları buraya koyacağız. */
+    .ai-results {
+        margin-top: 16px;
+    }
+</style>
+<script>
+    document.addEventListener('DOMContentLoaded', () => {
+      const form    = document.getElementById('ai-form');
+      const input   = document.getElementById('ai-query');
+      const status  = document.getElementById('ai-status');
+      const results = document.getElementById('ai-results');
+
+      if (!form) { console.error('ai-form not found'); return; }
+
+      form.addEventListener('submit', async (e) => {   // ✅ async here
+        e.preventDefault();
+
+        const q = (input.value || '').trim();
+        if (!q) { status.textContent = "Lütfen bir arama metni yaz."; return; }
+
+        status.textContent = "Searching...";
+        try {
+          const resp = await fetch('/api/ai/search', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ query: q })
+          });
+          const data = await resp.json();
+
+          if (!resp.ok) { status.textContent = data?.error || "Server error."; return; }
+
+          results.innerHTML = "";
+          (data.items || []).forEach(item => {
+            const div = document.createElement('div');
+            div.className = 'ai-card';
+            div.innerHTML = `<strong>${item.title}</strong><br><small>${(item.why||[]).join(', ')}</small>`;
+            results.appendChild(div);
+          });
+
+          status.textContent = `Found ${(data.items||[]).length} results in ${data.tookMs} ms`;
+        } catch (err) {
+          console.error(err);
+          status.textContent = "Network error.";
+        }
+      });
+    });
+</script>
+
