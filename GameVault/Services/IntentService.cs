@@ -7,11 +7,12 @@ using Microsoft.Extensions.Logging;
 public interface IIntentService
 {
     Task<ParsedIntent> ParseAsync(string userText, CancellationToken ct);
+    // Anladığım kadarıyla kullanıcının querysini al düzelt niyetini anla ve döndür diyor, Interface kullanarak bu işi yapacak her sınıfın bu metotlara uyması gerektiğini şartlıyoruz.
 }
 
-public sealed class IntentService : IIntentService
-{
-    private readonly HttpClient _http;
+public sealed class IntentService : IIntentService // IntentService sınıfı, IntentService Interface'ine bağlı. Bu yüzden kesinlikle ParseAsync metodu olacak.
+{  // 'sealed' çünkü kalıtım almasın. 
+    private readonly HttpClient _http; // API ça
     private readonly IConfiguration _cfg;
     private readonly ILogger<IntentService> _logger;
 
@@ -43,39 +44,46 @@ public sealed class IntentService : IIntentService
             new {
                 role = "system",
                 content =
-        @"You convert a natural-language game query into STRICT JSON:
+        @"Convert a natural-language game query into STRICT JSON:
+
         {""include"":[], ""exclude"":[], ""titles"":[]}
 
         RULES:
-        - include: 2–6 SHORT ENGLISH concept tokens (lowercase), e.g. ""medieval"", ""dragon"", ""open world"", ""horror"", ""police chase"", ""rpg"".
-          * Translate non-English concepts to English (e.g., TR: ""ejderha"" → ""dragon"", ""ortaçağ"" → ""medieval"", ""açık dünya"" → ""open world"").
-          * No punctuation, no phrases longer than 2–3 words.
-        - exclude: 0–6 SHORT ENGLISH tokens to avoid (e.g., ""magic"", ""wizard"", ""multiplayer"", ""sci-fi"").
-        - titles: 3–6 LIKELY, POPULAR ENGLISH game/franchise names that match the vibe, even if user did NOT name them.
-          * Prefer globally known blockbusters first. Proper case.
-          * If vague query (""the game where we kill monsters""), still guess iconic fits (e.g., The Witcher 3, Monster Hunter: World, DOOM).
-        - Never echo the user's text, never add commentary. Output ONLY raw JSON (no code fences).
-        - Dedupe all lists. Keep ""include/exclude"" lowercase; keep ""titles"" proper-cased."
+        - Output ONLY raw JSON (no code fences, no comments).
+        - If unsure, leave fields empty. Never invent slugs/ids.
+        - include: 2–6 short ENGLISH tokens (lowercase). Max 2–3 words per token. Examples: ""open world"", ""police chase"", ""horror"", ""rpg"", ""medieval"".
+        - exclude: 0–6 short ENGLISH tokens (lowercase). Examples: ""magic"", ""multiplayer"", ""sci-fi"".
+        - titles: 3–6 LIKELY, POPULAR ENGLISH game/franchise names (Proper Case). Prefer globally known blockbusters first.
+        - Dedupe all lists."
             },
 
-            // Few-shot 1: police chase
+            // Few-shot 1
             new { role = "user", content = "police chase" },
             new { role = "assistant", content =
-                @"{""include"":[""police"",""" + "chase" + @""",""racing""],""exclude"":[],""titles"":[""Grand Theft Auto V"",""Need for Speed: Hot Pursuit"",""Need for Speed: Most Wanted"",""Driver: San Francisco"",""Burnout Paradise Remastered""]}" },
+                @"{""include"":[""police"",""chase"",""racing""],""exclude"":[],""titles"":[""Grand Theft Auto V"",""Need for Speed: Hot Pursuit"",""Need for Speed: Most Wanted"",""Driver: San Francisco"",""Burnout Paradise Remastered""]}" },
 
-            // Few-shot 2: vague monster killing
+            // Few-shot 2
             new { role = "user", content = "the game where we kill monsters" },
             new { role = "assistant", content =
                 @"{""include"":[""monster"",""combat"",""rpg""],""exclude"":[],""titles"":[""The Witcher 3: Wild Hunt"",""Monster Hunter: World"",""Dark Souls III"",""DOOM (2016)"",""Diablo III""]}" },
-
-            // Few-shot 3: Turkish → English concepts, plus a negative
-            new { role = "user", content = "ortaçağ ejderha var ama büyü olmasın, açık dünya olsun" },
+            // Few-shot: "kill monsters for coin" → Witcher
+            new { role = "user", content = "the game where we kill monsters for coin" },
             new { role = "assistant", content =
-                @"{""include"":[""medieval"",""dragon"",""open world""],""exclude"":[""magic""],""titles"":[""The Elder Scrolls V: Skyrim"",""Dragon's Dogma: Dark Arisen"",""Kingdom Come: Deliverance"",""Dark Souls III""]}" },
+            @"{""include"":[""monster"",""bounty"",""contract"",""rpg""],""exclude"":[],""titles"":[""The Witcher 3: Wild Hunt"",""The Witcher 2: Assassins of Kings"",""Monster Hunter: World""]}" },
 
-            // Actual user message
+            // Few-shot 3 (Keanu → Cyberpunk)
+            new { role = "user", content = "that game where we play in the future with keanu reeves" },
+            new { role = "assistant", content =
+                @"{""include"":[""keanu reeves"",""future"",""rpg""],""exclude"":[],""titles"":[""Cyberpunk 2077"",""Deus Ex: Human Revolution"",""The Ascent""]}" },
+            // Few-shot: cowboy → RDR2
+            new { role = "user", content = "that game where we play as a cowboy" },
+            new { role = "assistant", content =
+            @"{""include"":[""cowboy"",""western"",""open world""],""exclude"":[],""titles"":[""Red Dead Redemption 2"",""Red Dead Redemption"",""Call of Juarez: Gunslinger"",""Desperados III""]}" },
+
+            // Actual query
             new { role = "user", content = userText }
         };
+
 
         var body = new
         {

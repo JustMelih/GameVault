@@ -2,6 +2,8 @@ using Microsoft.AspNetCore.Identity;
 using GameVault.Models;
 using Microsoft.EntityFrameworkCore;
 using GameVault;
+using GameVault.Integrations.Rawg;
+
 
 var builder = WebApplication.CreateBuilder(args);
 

@@ -1,5 +1,8 @@
-﻿using Microsoft.AspNetCore.Mvc;
+﻿using GameVault.Integrations.Rawg;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Caching.Memory;
+using System.Text.RegularExpressions;
+
 
 namespace GameVault.Controllers
 {
@@ -58,6 +61,62 @@ namespace GameVault.Controllers
 
                 intent.Include ??= new(); intent.Exclude ??= new(); intent.Titles ??= new(); // Üç alandaki intentlerin hiçbir zaman boş olmamasını sağlıyoruz.
                 if (!usedFallback) _cache.Set(intentKey, intent, TimeSpan.FromMinutes(30)); // Sadece AI'ın döndürdüğü sonuçları cache'e al, bu sayede cache yedekten gelen kalitesiz sorgu ile dolmasın.
+                                                                                            // --- Stop kelime filtresi (gereksiz kelimeleri ayıkla) ---
+                                                                                            // --- Genel alias genişletme (yamadan ziyade seri eşlemesi) ---
+                var qLower = (req.Query ?? "").ToLowerInvariant();
+                bool mentionsWar = qLower.Contains("war") || qLower.Contains("military") || qLower.Contains("soldier") || qLower.Contains("battle");
+
+                if (mentionsWar)
+                {
+                    void AddInc(string t)
+                    {
+                        if (!intent.Include.Any(x => x.Equals(t, StringComparison.OrdinalIgnoreCase)))
+                            intent.Include.Add(t);
+                    }
+                    // Broaden search surface (generic, not hard-coded results)
+                    AddInc("battlefield");
+                    AddInc("crysis");
+                    AddInc("arma");
+                    AddInc("medal of honor");
+                    AddInc("company of heroes");
+                }
+
+                void AddIfMissing(List<string> list, string token)
+                {
+                    if (!list.Any(x => x.Equals(token, StringComparison.OrdinalIgnoreCase)))
+                        list.Add(token);
+                }
+
+                // sports yearly franchises
+                if (intent.Include.Any(t => t.Contains("fifa", StringComparison.OrdinalIgnoreCase)))
+                {
+                    AddIfMissing(intent.Include, "ea sports fc");
+                    // titles varsa ekstra arama sinyali için:
+                    if (!intent.Titles.Any(t => t.Contains("EA SPORTS FC", StringComparison.OrdinalIgnoreCase)))
+                        intent.Titles.Add("EA SPORTS FC 25"); // RAWG'de mevcutsa ipucu olur; yoksa zarar vermez
+                }
+
+                // city builder sinyali güçlendir (genel)
+                if (intent.Include.Any(t => t.Contains("city", StringComparison.OrdinalIgnoreCase)) &&
+                    intent.Include.Any(t => t.Contains("build", StringComparison.OrdinalIgnoreCase)))
+                {
+                    AddIfMissing(intent.Include, "city builder");
+                    // titles varsa “II” varyantlarına ipucu verir
+                    if (!intent.Titles.Any(t => t.Contains("Cities: Skylines II", StringComparison.OrdinalIgnoreCase)))
+                        intent.Titles.Add("Cities: Skylines II");
+                }
+
+                var stop = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    "game", "games", "video", "videogame", "the", "a", "an", "play", "player", "we"
+                };
+
+                intent.Include = intent.Include
+                    .Where(t => !stop.Contains(t) && t.Length >= 3)
+                    .Distinct()
+                    .Take(6)
+                    .ToList();
+
             }
 
             var include = intent.Include!; // Intent içindeki 'Include' ve 'Exclude'lardan referans alır. '!' = null-forgiving. Bu alanlar null değil uyarı verme.
@@ -70,8 +129,11 @@ namespace GameVault.Controllers
                 .ToList(); // 'titles' bir list halini alır.
 
             // RAWG main query
-            var rawgQuery = string.Join(' ', new[] { req.Query, string.Join(' ', include) } // Kullanıcının sorgusu ve AI'ın önerdiği ek anahtar kelimeler birleştirilip,
-                .Where(s => !string.IsNullOrWhiteSpace(s)));                                // boşluk ve null'lardan arındırılarak RAWG API'a gidecek nihai arama sorgusu oluşturuluyor.
+            // Prefer clean, concept-only search — remove "game where we ..." junk
+            var cleanUserText = Regex.Replace(req.Query, @"\b(game|where|we|play|in|as|the|a|an)\b", "", RegexOptions.IgnoreCase);
+            var rawgQuery = string.Join(' ', new[] { cleanUserText, string.Join(' ', include) })
+                .Trim();
+            // boşluk ve null'lardan arındırılarak RAWG API'a gidecek nihai arama sorgusu oluşturuluyor.
 
             List<RawgGame> mainList; // Sonuçların gideceği ana liste, aşağıdan 'try' içinden güvenli bir şekilde doldurulacak.
             string? rawgError = null; // RAWG çağrısı sırasında bir şey ters giderse hata mesajı burada saklanacak.
@@ -118,52 +180,322 @@ namespace GameVault.Controllers
             // ---- Negative filters ----
             var filtered = ApplyNegatives(all, exclude).ToList(); // Intent'ten gelen hariç tut anahtarlarını arayıp eşleşen oyunları eliyor.
 
-            // ---- Ranking ----
-            int Rank(RawgGame g) // PUANLAYICI.
+
+
+            bool LooksLikeSpam(RawgGame g)
             {
-                var name = (g?.Name ?? "").ToLowerInvariant(); // 'g' null ise hata vermesin diye boş stringe dönüştürüyor, hepsini küçük harfe çekiyoruz.
+                var name = (g?.Name ?? "").Trim();
+                if (name.Length < 3) return true;
 
-                // exact blockbuster matches
-                foreach (var t in titles) // LLM'den gelen 'titles' içindekileri puanlıyoruz.
-                {
-                    var tt = t.ToLowerInvariant(); // Büyük/küçük harfi düzeltiyoruz.
-                    if (name == tt) return 0; // Tam eşleşirse 0 dönüyor. (1. öncelik (zirve))
-                    if (name.StartsWith(tt)) return 1; // Başlangıçta eşleşme varsa 1 dönüyor. (2. öncelik)
-                    if (name.Contains(tt)) return 2; // Sadece barındırıyorsa 2 döndürüyor. (3. öncelik)
-                }
+                var lower = name.ToLowerInvariant();
 
-                // include keyword presence
-                var hay = ((g?.Name ?? "") + " " + string.Join(' ', g?.Genres ?? new List<string>())).ToLowerInvariant(); // Oyun türlerini birleştirip, düzenliyoruz aynı zamanda null olursa diye koruyoruz.
-                if (include.Any(k => !string.IsNullOrWhiteSpace(k) && hay.Contains(k.ToLowerInvariant()))) // AI'ın önerdiği anahtar kelimeleri (include listesi) oyun ismi veya türleri arasında geçip geçmediğini kontrol eder.
-                    return 3; // Eğer geçiyorsa, oyunun tema ile alakalı olduğu varsayılır ve az miktarda öncelik veriyor.
+                // Aynı kelime 3+ tekrar (COIN COIN COIN gibi)
+                var words = lower.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                if (words.Length > 0 && words.GroupBy(w => w).Max(gr => gr.Count()) >= 3) return true;
 
-                // ↓↓↓ add platform penalty here (before fallback)
-                var goodPlatform = (g?.Platforms ?? new List<string>()).Any(p => // Oyun alttaki platformların en az birinde yayınlanmış mı?
-                    p.Contains("PC", StringComparison.OrdinalIgnoreCase) || // Eğer oyun bunların birinde varsa 'goodPlatform' true olur, yoksa false olur.
-                    p.Contains("PlayStation", StringComparison.OrdinalIgnoreCase) ||
-                    p.Contains("Xbox", StringComparison.OrdinalIgnoreCase) ||
-                    p.Contains("Nintendo", StringComparison.OrdinalIgnoreCase)
-                );
-                if (!goodPlatform)
-                    return 8; // goodPlatform false olursa (yani mobil ve webteki çöp oyunlarda yayınlanmışsa), en dip puanı ver.
+                // Aşırı noktalama/emoji vs. (oyun adı değil, mobil clicker kokusu)
+                var letters = words.Sum(w => w.Count(char.IsLetter));
+                var nonLetters = lower.Count(ch => !char.IsLetter(ch) && !char.IsWhiteSpace(ch));
+                if (letters > 0 && nonLetters > letters) return true;
 
-                // penalty for generic single-word names (cheap / vague)
-                if (name.Length < 6 && !name.Contains("3") && !name.Contains("ii") && !name.Contains("iv")) // İsmi çok kısa tek kelimeden oluşan oyunları hedef alır, roma rakamlarıyla yazılan IV, V gibi olanları hariç tutar.
-                    return 7; // En düşüğün bir üstü puan verir.
-
-                // fallback
-                return 6; // Ortalama oyun kategorisi.
+                return false;
             }
 
-            var ranked = filtered.OrderBy(g => Rank(g)) // Negatif filtrelerden geçmiş her oyuna 'Rank' fonksiyonunu uygulayıp sıralıyor.
-                                 .ThenBy(g => g.Name ?? "") // Aynı Rank değerine sahip olanları ikinci kez sıralıyor.
-                                 .Take(limit); // Daha önce ayarladığımız limit kadar oyun sıralanır.
+            all = all.Where(g => !LooksLikeSpam(g)).ToList();
 
-            var items = ranked.Select(g => new // Response için şekillendiriliyor.
+            // ---- Ranking ----
+            int Rank(RawgGame g)
             {
-                title = g.Name, // Kullanıcının göreceği başlık.
-                why = BuildWhy(g, intent) // Neden bu sonucu gösterdiğimizi açıklayan (title eşleşmesi, platform, include match gibi) bir string üretir.
+                if (g == null) return int.MaxValue;
+
+                var name = (g.Name ?? "").Trim();
+                var nameL = name.ToLowerInvariant();
+
+                // 1) Titles eşleşme (ikonik isimler)
+                double titleHit = 0;
+                foreach (var t in titles)
+                {
+                    var tt = t.Trim().ToLowerInvariant();
+                    if (string.IsNullOrEmpty(tt)) continue;
+
+                    if (nameL == tt) { titleHit = 1.00; break; }
+                    else if (nameL.StartsWith(tt)) { titleHit = Math.Max(titleHit, 0.85); }
+                    else if (nameL.Contains(tt)) { titleHit = Math.Max(titleHit, 0.70); }
+                }
+
+                // 2) Include örtüşmesi (genel)
+                var hay = (name + " " + string.Join(' ', g.Genres ?? new()) + " " + string.Join(' ', g.Platforms ?? new()))
+                            .ToLowerInvariant();
+
+                var inc = include.Where(s => s.Length >= 3).ToList();
+                int incHit = inc.Count(k => hay.Contains(k));
+                double incScore = inc.Count == 0 ? 0 : (double)incHit / inc.Count; // 0..1
+
+                // 3) Query bigram örtüşmesi (genel)
+                double phraseScore = 0;
+                {
+                    var qTokens = (req.Query ?? "").ToLowerInvariant()
+                        .Split(new[] { ' ', ',', '.', ':', ';', '/', '\\', '-', '_' }, StringSplitOptions.RemoveEmptyEntries)
+                        .Where(w => w.Length >= 3 && w != "game" && w != "play" && w != "where")
+                        .ToArray();
+
+                    for (int i = 0; i < qTokens.Length - 1; i++)
+                    {
+                        var bigram = qTokens[i] + " " + qTokens[i + 1];
+                        if (nameL.Contains(bigram)) phraseScore += 0.5;
+                    }
+                    phraseScore = Math.Min(1.0, phraseScore);
+                }
+
+                // 4) Platform sinyali (genel)
+                // 4) Platform sinyali (güncelle)
+                var plats = g.Platforms ?? new();
+                bool hasConsolePc = plats.Any(p =>
+                    p.Contains("PC", StringComparison.OrdinalIgnoreCase) ||
+                    p.Contains("PlayStation", StringComparison.OrdinalIgnoreCase) ||
+                    p.Contains("Xbox", StringComparison.OrdinalIgnoreCase) ||
+                    p.Contains("Nintendo", StringComparison.OrdinalIgnoreCase));
+
+                bool isBrowser = plats.Any(p =>
+                    p.Contains("Web", StringComparison.OrdinalIgnoreCase) ||
+                    p.Contains("Browser", StringComparison.OrdinalIgnoreCase));
+
+                bool isMobileOnly = !hasConsolePc && plats.Any(p =>
+                    p.Contains("Android", StringComparison.OrdinalIgnoreCase) ||
+                    p.Contains("iOS", StringComparison.OrdinalIgnoreCase));
+
+                double platScore =
+                    isBrowser ? -0.9 :
+                    isMobileOnly ? -0.5 :
+                    hasConsolePc ? 0.2 : -0.2;
+
+                // ---- Franchise key çıkar (numerik/roman/edition at) ----
+                string FranchiseKey(string name)
+                {
+                    var n = (name ?? "").ToLowerInvariant();
+                    n = System.Text.RegularExpressions.Regex.Replace(n, @"\b(remastered|definitive|ultimate|deluxe|goty|edition|unlimited|complete)\b", "");
+                    n = System.Text.RegularExpressions.Regex.Replace(n, @"\b(ii|iii|iv|v|vi|vii|viii|ix|x)\b", ""); // roman
+                    n = System.Text.RegularExpressions.Regex.Replace(n, @"\b\d{2,4}\b", ""); // yıllar/sayılar
+                    n = n.Replace(":", "").Replace("-", " ");
+                    n = System.Text.RegularExpressions.Regex.Replace(n, @"\s+", " ").Trim();
+                    return n;
+                }
+
+                // Tüm adaylardan franchise → en yeni yıl tablosu
+                int YearOf(string? s) => DateTime.TryParse(s, out var d) ? d.Year : 0;
+
+                var latestYearByFranchise = all
+                    .GroupBy(g => FranchiseKey(g.Name))
+                    .ToDictionary(gr => gr.Key, gr => gr.Max(x => YearOf(x.Released)));
+
+                // Rank() içinde (en altta score hesaplanırken) şu ek alanı kullan:
+                double franchiseBoost = 0;
+                {
+                    var key = FranchiseKey(g.Name!);
+                    if (latestYearByFranchise.TryGetValue(key, out var latest))
+                    {
+                        var y = YearOf(g.Released);
+                        if (latest > 0 && y > 0)
+                        {
+                            var diff = latest - y; // 0 = en yeni
+                            if (diff == 0) franchiseBoost = 0.35;          // en yeni olanlar öne
+                            else if (diff == 1) franchiseBoost = 0.15;     // bir önceki
+                            else if (diff == 2) franchiseBoost = 0.05;     // iki önceki
+                            else franchiseBoost = 0;                        // daha eski: boost yok
+                        }
+                    }
+                }
+
+                // 5) İsim aşırı kısa/jenerik cezası (genel)
+                double genericPenalty = 0;
+                if (name.Length <= 3) genericPenalty -= 0.6;
+                if (name.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length == 1 && name.Length < 6)
+                    genericPenalty -= 0.3;
+
+                // 6) Recency (varsa)
+                // 6) Recency (güncelle — yumuşak eğri)
+                double recency = 0;
+                if (DateTime.TryParse(g.Released, out var dt))
+                {
+                    var ageYears = Math.Max(0, (DateTime.UtcNow - dt).TotalDays / 365.0);
+                    // 0 yaş ≈ +0.35, 3 yaş ≈ +0.20, 6 yaş ≈ +0.10, 10+ ≈ +0.03
+                    recency = 0.35 * Math.Exp(-ageYears / 6.0);
+                }
+
+
+                // 7) Popülerlik/kalite (RAWG alanları — RawgClient’te mapledik)
+                double popScore = 0;
+                if (g.RatingsCount > 0)
+                    popScore += Math.Min(0.4, Math.Log10(g.RatingsCount + 1) * 0.2); // 0..~0.4
+                if (g.Metacritic is int mc)
+                    popScore += Math.Clamp((mc - 60) / 100.0, 0, 0.3); // 60 üstüne hafif boost
+
+                // 8) Konu-uyumsuzluk cezası (genel)
+                double mismatch = TopicMismatchPenalty(g, include);
+
+                // ---- toplam skor (yüksek iyi) ----
+                double score =
+                      1.30 * titleHit
+                    + 1.05 * incScore
+                    + 0.70 * phraseScore
+                    + 0.30 * recency
+                    + 0.25 * popScore
+                    + franchiseBoost      // <— eklendi
+                    + platScore
+                    + genericPenalty
+                    + mismatch;
+
+                // Rank'ta küçük daha iyi; tersle
+                return (int)(1000 - score * 100.0);
+            }
+
+
+            bool MatchesTitle(RawgGame g, IEnumerable<string> ts)
+            {
+                var name = (g?.Name ?? "").Trim().ToLowerInvariant();
+                foreach (var t in ts)
+                {
+                    var tt = t.Trim().ToLowerInvariant();
+                    if (string.IsNullOrEmpty(tt)) continue;
+                    if (name == tt || name.StartsWith(tt) || name.Contains(tt))
+                        return true;
+                }
+                return false;
+            }
+
+            double TopicMismatchPenalty(RawgGame g, List<string> include)
+            {
+                var hay = ((g?.Name ?? "") + " " + string.Join(' ', g?.Genres ?? new()))
+                          .ToLowerInvariant();
+
+                var niche = new[] { "dating sim", "idle", "clicker", "gacha" };
+                bool nichePresent = niche.Any(n => hay.Contains(n));
+
+                bool userAskedNiche = include.Any(inc =>
+                    niche.Any(n => n.Contains(inc, StringComparison.OrdinalIgnoreCase)));
+
+                if (nichePresent && !userAskedNiche) return -0.4;  // ufak ceza
+                return 0;
+            }
+
+            // --- helper to normalize franchise keys (local function is fine here)
+            string FranchiseKey(string name)
+            {
+                var n = (name ?? "").ToLowerInvariant().Trim();
+
+                // Normalize separators
+                n = n.Replace('–', '-').Replace('—', '-');
+
+                // Hard root mapping for mega-franchises (prevents CoD sublines bypassing cap)
+                if (n.StartsWith("call of duty")) return "call of duty";
+                if (n.StartsWith("battlefield")) return "battlefield";
+                if (n.StartsWith("medal of honor")) return "medal of honor";
+                if (n.StartsWith("crysis")) return "crysis";
+                if (n.StartsWith("arma")) return "arma";
+                if (n.StartsWith("company of heroes")) return "company of heroes";
+                if (n.StartsWith("total war")) return "total war";
+
+                // Generic fallback: strip subtitles after ":" or " - "
+                var cut = n.IndexOf(':');
+                if (cut > 0) n = n[..cut];
+                cut = n.IndexOf(" - ");
+                if (cut > 0) n = n[..cut];
+
+                // Remove common suffix noise
+                n = System.Text.RegularExpressions.Regex.Replace(n,
+                    @"\b(remastered|definitive|ultimate|deluxe|goty|edition|unlimited|complete)\b", "",
+                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+                // Drop roman numerals & plain years/numbers
+                n = System.Text.RegularExpressions.Regex.Replace(n, @"\b(ii|iii|iv|v|vi|vii|viii|ix|x)\b", "", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                n = System.Text.RegularExpressions.Regex.Replace(n, @"\b\d{2,4}\b", "");
+
+                // Normalize whitespace
+                n = System.Text.RegularExpressions.Regex.Replace(n, @"\s+", " ").Trim();
+                return n;
+            }
+
+            // Keep your buckets
+            var bucketA = filtered.Where(g => MatchesTitle(g, titles)).ToList(); // titles-aligned
+            var bucketB = filtered.Where(g => !MatchesTitle(g, titles)).ToList();
+
+            // Order inside each bucket with your existing Rank()
+            var orderedA = bucketA.OrderBy(g => Rank(g)).ThenBy(g => g.Name ?? "").ToList();
+            var orderedB = bucketB.OrderBy(g => Rank(g)).ThenBy(g => g.Name ?? "").ToList();
+
+            // Global per-franchise cap
+            const int franchiseCap = 1; // try 1 first; raise to 2 if too strict
+
+            var pickA = orderedA.GetEnumerator();
+            var pickB = orderedB.GetEnumerator();
+
+            bool nextA = true; // alternate A/B
+            var seen = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            var rankedList = new List<RawgGame>(limit);
+
+            // Helper to try taking next from an enumerator with cap
+            bool TryTake(IEnumerator<RawgGame> it)
+            {
+                if (!it.MoveNext()) return false;
+                var g = it.Current;
+                var key = FranchiseKey(g.Name);
+                seen.TryGetValue(key, out var cnt);
+                if (cnt >= franchiseCap) return false; // skip; caller will try again on next loop
+
+                rankedList.Add(g);
+                seen[key] = cnt + 1;
+                return true;
+            }
+
+            // Round-robin until filled or both exhaust
+            while (rankedList.Count < limit && (orderedA.Count > 0 || orderedB.Count > 0))
+            {
+                var took = false;
+
+                if (nextA && orderedA.Count > 0)
+                    took = TryTake(pickA);
+                else if (!nextA && orderedB.Count > 0)
+                    took = TryTake(pickB);
+
+                // If chosen bucket couldn't provide (cap/exhaustion), try the other
+                if (!took)
+                {
+                    if (nextA && orderedB.Count > 0) took = TryTake(pickB);
+                    else if (!nextA && orderedA.Count > 0) took = TryTake(pickA);
+                }
+
+                // If neither provided, break
+                if (!took) break;
+
+                // Flip for next round
+                nextA = !nextA;
+
+                // Early exit
+                if (rankedList.Count >= limit) break;
+            }
+
+            // If still short (due to caps), append remaining in overall order ignoring caps
+            if (rankedList.Count < limit)
+            {
+                var chosenIds = new HashSet<int>(rankedList.Select(x => x.Id));
+                foreach (var g in orderedA.Concat(orderedB))
+                {
+                    if (chosenIds.Contains(g.Id)) continue;
+                    rankedList.Add(g);
+                    if (rankedList.Count >= limit) break;
+                }
+            }
+
+            var ranked = rankedList.Take(limit).ToList();
+
+            // Your items projection stays the same
+            var items = ranked.Select(g => new
+            {
+                title = g.Name,
+                why = BuildWhy(g, intent)
             });
+
+
 
             return Ok(new // 'Ok', 'Status: 200' (Başarılı çalışma) kodu üretir.
             {
