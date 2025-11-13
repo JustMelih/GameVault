@@ -1,98 +1,163 @@
 ﻿using System.Net.Http.Json;
-using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Configuration;
 
-namespace GameVault.Integrations.Rawg;
+public sealed record ResolvedGame(
+    int Id,
+    string Name,
+    string? Released,
+    string Slug,
+    string? BackgroundImage,
+    double Score,         // hafif deterministik skor (recency/popularity)
+    string? PlatformsCsv  // görüntü amaçlı
+);
 
 public interface IRawgClient
 {
-    Task<List<RawgGame>> SearchAsync(string query, int limit, CancellationToken ct);
+    Task<IReadOnlyList<RawgGame>> SearchAsync(string title, CancellationToken ct);
 }
 
-public class RawgClient : IRawgClient
+public interface IRawgResolver
+{
+    Task<IReadOnlyList<ResolvedGame>> ResolveManyAsync(
+        IReadOnlyList<string> titles, string? preferPlatform, CancellationToken ct);
+}
+
+public sealed class RawgClient : IRawgClient
 {
     private readonly HttpClient _http;
-    private readonly IMemoryCache _cache;
-    private readonly IConfiguration _cfg;
+    private readonly string _apiKey;
+    private readonly ILogger<RawgClient> _logger;
 
-    public RawgClient(HttpClient http, IMemoryCache cache, IConfiguration cfg)
+    public RawgClient(HttpClient http, IConfiguration cfg, ILogger<RawgClient> logger)
     {
-        _http = http; _cache = cache; _cfg = cfg;
+        _http = http;
+        _logger = logger;
+        _apiKey = cfg["RAWG:ApiKey"] ?? throw new InvalidOperationException("RAWG:ApiKey missing");
+        _http.BaseAddress ??= new Uri("https://api.rawg.io/api/");
+        _http.Timeout = TimeSpan.FromSeconds(5);
     }
 
-    public async Task<List<RawgGame>> SearchAsync(string query, int limit, CancellationToken ct)
+    public async Task<IReadOnlyList<RawgGame>> SearchAsync(string title, CancellationToken ct)
     {
-        // 1) Basic guard
-        query = (query ?? "").Trim();
-        if (string.IsNullOrEmpty(query)) return new List<RawgGame>();
+        var url = $"games?search={Uri.EscapeDataString(title)}&page_size=5&key={_apiKey}";
+        using var req = new HttpRequestMessage(HttpMethod.Get, url);
+        var res = await _http.SendAsync(req, ct);
+        res.EnsureSuccessStatusCode();
 
-        // 2) Cache key (same query → same results for 5 min)
-        var cacheKey = $"rawg:{query}:{limit}";
-        if (_cache.TryGetValue(cacheKey, out List<RawgGame> cached)) return cached;
+        var json = await res.Content.ReadFromJsonAsync<RawgResponse>(cancellationToken: ct);
+        return json?.Results ?? new List<RawgGame>();
+    }
+}
 
-        // 3) Build URL
-        var key = _cfg["Rawg:ApiKey"];
-        var size = Math.Clamp(limit * 2, 20, 40);
-        var url = $"games?search={Uri.EscapeDataString(query)}&page_size={size}&key={key}";
+// === RAWG DTO'ları (yalın) ===
+public sealed class RawgResponse { public List<RawgGame> Results { get; init; } = new(); }
+public sealed class RawgGame
+{
+    public int Id { get; init; }
+    public string Name { get; init; } = "";
+    public string Slug { get; init; } = "";
+    public string? Released { get; init; }
+    public string? Background_Image { get; init; }
+    public int Additions_Count { get; init; }
+    public int? Metacritic { get; init; }
+    public List<ParentPlatform> Parent_Platforms { get; init; } = new();
+}
+public sealed class ParentPlatform { public Platform Platform { get; init; } = new(); }
+public sealed class Platform { public string Slug { get; init; } = ""; }
 
-        // 4) Call RAWG
-        var resp = await _http.GetAsync(url, ct);
-        if (!resp.IsSuccessStatusCode)
+// === Resolver: "ilk kabul edilebilir" + hafif skor ===
+public sealed class RawgResolver : IRawgResolver
+{
+    private readonly IRawgClient _rawg;
+    private readonly ILogger<RawgResolver> _logger;
+
+    public RawgResolver(IRawgClient rawg, ILogger<RawgResolver> logger)
+    {
+        _rawg = rawg;
+        _logger = logger;
+    }
+
+    public async Task<IReadOnlyList<ResolvedGame>> ResolveManyAsync(
+        IReadOnlyList<string> titles, string? preferPlatform, CancellationToken ct)
+    {
+        var tasks = titles.Select(t => ResolveOneAsync(t, preferPlatform, ct));
+        var results = await Task.WhenAll(tasks);
+        // null’ları at, id’ye göre deduplikasyon
+        var uniq = results.Where(x => x is not null)
+                          .GroupBy(x => x!.Id)
+                          .Select(g => g.First()!)
+                          .OrderByDescending(x => x.Score)
+                          .Take(10)
+                          .ToList();
+        return uniq;
+    }
+
+    private async Task<ResolvedGame?> ResolveOneAsync(string title, string? preferPlatform, CancellationToken ct)
+    {
+        try
         {
-            // return empty on fail (we don’t crash the site)
-            return new List<RawgGame>();
+            var list = await _rawg.SearchAsync(title, ct);
+            if (list.Count == 0) return null;
+
+            var chosen = list.FirstOrDefault(Acceptable);
+            chosen ??= list.First(); // hiçbiri geçmezse en üsttekini yine al
+
+            var score = Rank(chosen, preferPlatform);
+            var platformsCsv = string.Join(",",
+                chosen.Parent_Platforms.Select(p => p.Platform.Slug));
+
+            return new ResolvedGame(
+                chosen.Id,
+                chosen.Name,
+                chosen.Released,
+                chosen.Slug,
+                chosen.Background_Image,
+                score,
+                platformsCsv
+            );
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Resolve failed for title '{Title}'", title);
+            return null;
+        }
+    }
+
+    // DLC/Edition/Bundle/Collection hızlı eler
+    private static bool Acceptable(RawgGame g)
+    {
+        if (string.IsNullOrWhiteSpace(g.Released)) return false;
+        if (g.Additions_Count > 0) return false;
+        var n = g.Name.ToLowerInvariant();
+        if (n.Contains("dlc") || n.Contains("soundtrack") || n.Contains("definitive")
+            || n.Contains("remaster") || n.Contains("remastered")
+            || n.Contains("complete") || n.Contains("bundle") || n.Contains("collection"))
+            return false;
+        return true;
+    }
+
+    // Basit deterministik skor: yakın tarih + metacritic + tercih edilen platform kesişimi
+    private static double Rank(RawgGame g, string? preferPlatform)
+    {
+        double s = 0;
+
+        if (DateTime.TryParse(g.Released, out var d))
+        {
+            var ageDays = (DateTime.UtcNow - d.ToUniversalTime()).TotalDays;
+            // daha yeniye hafif pozitif
+            s += Math.Max(0, 1000 - Math.Min(1000, ageDays / 10.0));
         }
 
-        var dto = await resp.Content.ReadFromJsonAsync<RawgSearchResponse>(cancellationToken: ct);
+        if (g.Metacritic is int mc)
+            s += mc * 2;
 
-        var list = (dto?.results ?? new()).Select(r => new RawgGame
+        if (!string.IsNullOrWhiteSpace(preferPlatform))
         {
-            Id = r.id,
-            Name = r.name ?? "Unknown",
-            Released = r.released,
-            Platforms = r.platforms?.Select(p => p.platform?.name ?? "")
-                         .Where(s => !string.IsNullOrWhiteSpace(s)).ToList() ?? new(),
-            Genres = r.genres?.Select(g => g.name ?? "")
-                       .Where(s => !string.IsNullOrWhiteSpace(s)).ToList() ?? new(),
+            var hit = g.Parent_Platforms.Any(p => p.Platform.Slug.Equals(preferPlatform, StringComparison.OrdinalIgnoreCase));
+            if (hit) s += 150;
+        }
 
-            // 🔹 Yeni eklenen alanlar (mapleme)
-            RatingsCount = r.ratings_count,
-            Metacritic = r.metacritic
-        }).ToList();
-
-
-        // 5) Cache for 5 minutes
-        _cache.Set(cacheKey, list, TimeSpan.FromMinutes(5));
-
-        return list;
+        return s;
     }
-}
-
-// --- minimal RAWG DTOs (only fields we use) ---
-public class RawgSearchResponse
-{
-    public List<RawgResult> results { get; set; } = new();
-}
-public class RawgResult
-{
-    public int id { get; set; }
-    public string? name { get; set; }
-    public string? released { get; set; }
-    public int ratings_count { get; set; }
-    public int? metacritic { get; set; }
-    public List<RawgPlatformWrap>? platforms { get; set; }
-    public List<RawgNameObj>? genres { get; set; }
-}
-public class RawgPlatformWrap { public RawgNameObj? platform { get; set; } }
-public class RawgNameObj { public string? name { get; set; } }
-
-// our simplified model for the controller
-public class RawgGame
-{
-    public int Id { get; set; }
-    public string Name { get; set; } = "";
-    public string? Released { get; set; }
-    public int RatingsCount { get; set; }
-    public int? Metacritic { get; set; }
-    public List<string> Platforms { get; set; } = new();
-    public List<string> Genres { get; set; } = new();
 }

@@ -1,10 +1,10 @@
-using Microsoft.AspNetCore.Identity;
-using GameVault.Models;
-using Microsoft.EntityFrameworkCore;
 using GameVault;
-using GameVault.Integrations.Rawg;
+using GameVault.Models;
+using Microsoft.AspNetCore.Identity;
+using Microsoft.EntityFrameworkCore;
+using System.Net;
 
-
+// >>> Yeni using'ler (resolver ve title-intent service kendi namespace'in neyse onu ekle)
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddControllersWithViews();
@@ -27,27 +27,36 @@ builder.Services.ConfigureApplicationCookie(options =>
 
 builder.Services.AddMemoryCache();
 
-// RAWG client
-builder.Services.AddHttpClient<IRawgClient, RawgClient>(c =>
+// --- RAWG CLIENT (ayný kalabilir) ---
+builder.Services.AddHttpClient<IRawgClient, RawgClient>(client =>
 {
-    var cfg = builder.Configuration.GetSection("Rawg");
-    var baseUrl = cfg["BaseUrl"] ?? "https://api.rawg.io/api/";
-    c.BaseAddress = new Uri(baseUrl);
-    c.Timeout = TimeSpan.FromSeconds(6);
+    client.BaseAddress = new Uri("https://api.rawg.io/api/");
+    client.Timeout = TimeSpan.FromSeconds(8); // biraz sýký
+    client.DefaultRequestHeaders.UserAgent.ParseAdd("GameVault/1.0 (+https://gamevault.local)");
+    client.DefaultRequestHeaders.Accept.ParseAdd("application/json");
+})
+.ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
+{
+    AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate
 });
 
-//  Always register the OpenAI `IntentService`. No config gating here.
-// LLM client — ALWAYS register, don't gate on config checks
-builder.Services.AddHttpClient<IIntentService, IntentService>(c =>
+// --- YENÝ: AI sadece baþlýk listesi servisimiz ---
+builder.Services.AddHttpClient<ITitleIntentService, TitleIntentService>(client =>
 {
-    var baseUrl = builder.Configuration["LLM:BaseUrl"] ?? "https://api.openai.com/v1/";
+    var baseUrl = builder.Configuration["OpenAI:BaseUrl"] ?? "https://api.openai.com/v1/";
     if (!baseUrl.EndsWith("/")) baseUrl += "/";
-    c.BaseAddress = new Uri(baseUrl);
-    c.Timeout = TimeSpan.FromSeconds(12);
+    client.BaseAddress = new Uri(baseUrl);
+    client.Timeout = TimeSpan.FromSeconds(99);
+})
+.ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
+{
+    AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate
 });
 
+// --- YENÝ: RAWG baþlýk çözümleyici (ilk kabul edilebilir sonucu seçer) ---
+builder.Services.AddSingleton<IRawgResolver, RawgResolver>();
 
-// DB
+// --- DB ---
 var connectionString = builder.Configuration.GetConnectionString("DefaultConnection")
     ?? throw new InvalidOperationException("Connection string 'DefaultConnection' not found.");
 

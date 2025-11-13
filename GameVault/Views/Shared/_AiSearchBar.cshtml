@@ -80,34 +80,59 @@
       const status  = document.getElementById('ai-status');
       const results = document.getElementById('ai-results');
 
-      if (!form) { console.error('ai-form not found'); return; }
+      if (!form) {
+        console.error('ai-form not found');
+        return;
+      }
 
-      form.addEventListener('submit', async (e) => {   // ✅ async here
+      form.addEventListener('submit', async (e) => {
         e.preventDefault();
 
         const q = (input.value || '').trim();
-        if (!q) { status.textContent = "Lütfen bir arama metni yaz."; return; }
+        if (!q) {
+          status.textContent = "Lütfen bir arama metni yaz.";
+          return;
+        }
 
         status.textContent = "Searching...";
+        results.innerHTML = "";
+
         try {
           const resp = await fetch('/api/ai/search', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ query: q })
           });
+
           const data = await resp.json();
 
-          if (!resp.ok) { status.textContent = data?.error || "Server error."; return; }
+          if (!resp.ok) {
+            status.textContent = data?.error || "Server error.";
+            return;
+          }
 
-          results.innerHTML = "";
-          (data.items || []).forEach(item => {
+          // 🔹 Backend debug=false → direkt liste döner
+          // 🔹 Backend debug=true  → { results: [...] } döner
+          const games = Array.isArray(data)
+            ? data
+            : (data.results || data.items || []);
+
+          if (!games.length) {
+            status.textContent = "No games found.";
+            return;
+          }
+
+          games.forEach(item => {
             const div = document.createElement('div');
             div.className = 'ai-card';
-            div.innerHTML = `<strong>${item.title}</strong><br><small>${(item.why||[]).join(', ')}</small>`;
+            div.innerHTML = `
+              <strong>${item.name}</strong><br>
+              <small>${item.why || ''}</small>
+            `;
             results.appendChild(div);
           });
 
-          status.textContent = `Found ${(data.items||[]).length} results in ${data.tookMs} ms`;
+          status.textContent = `Found ${games.length} games`;
         } catch (err) {
           console.error(err);
           status.textContent = "Network error.";
@@ -115,4 +140,5 @@
       });
     });
 </script>
+
 
