@@ -1,25 +1,24 @@
 GameVault
 
-Basit bir oyun keşif sitesi. Kullanıcı bir arama yapıyor, ben de o sorguya göre AI kullanarak oyunları listeliyorum.
-Arkaplanda RAWG API kullanılıyor ve bazı bilgiler için kısa AI özetleri oluşturuluyor.
+A simple game discovery website. The user types a query, and I use AI to interpret that query and list relevant games. The project uses the RAWG API in the background, and short AI-generated summaries are added for some game info.
 
-Bu proje benim ilk tamamlanmış projem, o yüzden her şey kusursuz değil ama elimden geleni yaptım ve gerçekten çok şey öğrendim.
+This is my first fully finished project, so it’s not perfect, but I did my best and learned a lot while building it.
 
-Özellikler:
+FEATURES:
 
-Oyun arama (AI destekli başlık analizi)
+Game search (AI-assisted title analysis)
 
-Oyun görselleri, çıkış tarihi, türler ve diğer temel bilgiler
+Game images, release dates, genres, and other basic details
 
-Kısa oyun açıklamaları için GameSummaryService
+Short game descriptions using GameSummaryService
 
-Basit ve anlaşılır bir arayüz
+Simple and clean UI
 
-Gereksiz eski özelliklerin temizlenmiş hali
+Removed old and unused features
 
-Daha hızlı ve daha az maliyetli istekler için optimizasyonlar
+Better performance and lower API cost
 
-Kullanılan Teknolojiler:
+TECHNOLOGIES USED:
 
 C# / .NET 9
 
@@ -29,7 +28,7 @@ Entity Framework Core
 
 RAWG Video Games API
 
-OpenAI API (kısa açıklamalar + başlık analizi)
+OpenAI API (short descriptions + title analysis)
 
 IMemoryCache
 
@@ -37,24 +36,24 @@ Bootstrap (frontend)
 
 ![gamevault](https://github.com/user-attachments/assets/a49e4bec-8b76-40a1-9511-e6baf60fe625)
 
-Nasıl Çalıştırılır?
+HOW TO RUN:
 
-Yakında yayınlanacak.
+Coming soon.
 
-Notlar:
+NOTES:
 
-Bu proje öğrenme amacıyla yapıldı.
+This project was created for learning purposes.
 
-Kodun bazı yerleri ileride daha düzenli hale getirilebilir.
+Some parts of the code may be improved later.
 
-Ufak geliştirmeler eklemeyi planlıyorum (çok büyük şeyler değil).
+I plan to add a few small enhancements (nothing huge).
 
-Gelecek Planları:
+FUTURE PLANS:
 
-Daha iyi filtreleme seçenekleri
+Better filtering options
 
-Temel bir admin paneli
+A basic admin panel
 
-UI tarafında ufak iyileştirmeler
+Small UI improvements
 
 Rate limiting / search cooldown
