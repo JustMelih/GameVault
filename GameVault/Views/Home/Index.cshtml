@@ -2,7 +2,7 @@
     Layout = "_Layout";
     ViewData["Title"] = "Home";
 }
-@await Html.PartialAsync("_AiSearchBar")
+
 @* <div id="splash">
     <h1>COMING SOON</h1>
 </div> *@
@@ -22,49 +22,11 @@
     <div class="container text-light">
         <h1 class="display-4 mb-3">Welcome to GameVault</h1>
         <p class="lead mb-4">
-            Discover, track, and review your favorite video games all in one place.
-        </p>
-        <a asp-controller="Home" asp-action="GameGallery" class="btn btn-dark border border-2 border-danger btn-lg">
-            Browse Games
-        </a>
+            Find the games that you can't remember the names of, or find new games based on your wishes!        </p>
     </div>
 </section>
+@await Html.PartialAsync("_AiSearchBar")
 
-<section class="container py-5">
-    <h2 class="mb-4 text-danger">Top Features</h2>
-    <div class="row g-4">
-        <div class="col-md-4">
-            <div class="card h-100 shadow-sm">
-                <div class="card-body bg-dark">
-                    <h5 class="card-title text-light">Extensive Library</h5>
-                    <p class="card-text text-light">
-                        Search through hundreds of titles, filter by genre, and save your favorites.
-                    </p>
-                </div>
-            </div>
-        </div>
-        <div class="col-md-4">
-            <div class="card h-100 shadow-sm">
-                <div class="card-body bg-dark">
-                    <h5 class="card-title text-light">Personal Ratings</h5>
-                    <p class="card-text text-light">
-                        Rate each game and leave reviews to share your experience with the community.
-                    </p>
-                </div>
-            </div>
-        </div>
-        <div class="col-md-4">
-            <div class="card h-100 shadow-sm">
-                <div class="card-body bg-dark">
-                    <h5 class="card-title text-light">Playtime Tracker</h5>
-                    <p class="card-text text-light">
-                        Keep track of how long you’ve played and set goals for your next gaming session.
-                    </p>
-                </div>
-            </div>
-        </div>
-    </div>
-</section>
 
 <section class="bg-dark text-light text-center py-4">
     <div class="container">

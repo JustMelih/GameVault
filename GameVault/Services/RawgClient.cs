@@ -1,6 +1,7 @@
-﻿using System.Net.Http.Json;
-using Microsoft.Extensions.Logging;
+﻿using Humanizer.Localisation;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
+using System.Net.Http.Json;
 
 public sealed record ResolvedGame(
     int Id,
@@ -9,12 +10,16 @@ public sealed record ResolvedGame(
     string Slug,
     string? BackgroundImage,
     double Score,         // hafif deterministik skor (recency/popularity)
-    string? PlatformsCsv  // görüntü amaçlı
+    string? PlatformsCsv,  // görüntü amaçlı
+    int? Metacritic,       // kartta göstereceğiz
+    string? GenresCsv,     // "RPG, Simulation" gibi
+    string? DescriptionRaw // RAWG'den gelen ham description (AI özet için de kullanacağız)
 );
 
 public interface IRawgClient
 {
     Task<IReadOnlyList<RawgGame>> SearchAsync(string title, CancellationToken ct);
+    Task<RawgGame?> GetDetailsAsync(int id, CancellationToken ct);
 }
 
 public interface IRawgResolver
@@ -48,10 +53,28 @@ public sealed class RawgClient : IRawgClient
         var json = await res.Content.ReadFromJsonAsync<RawgResponse>(cancellationToken: ct);
         return json?.Results ?? new List<RawgGame>();
     }
+    public async Task<RawgGame?> GetDetailsAsync(int id, CancellationToken ct)
+    {
+        var url = $"games/{id}?key={_apiKey}";
+        using var req = new HttpRequestMessage(HttpMethod.Get, url);
+        var res = await _http.SendAsync(req, ct);
+
+        if (!res.IsSuccessStatusCode)
+        {
+            _logger.LogWarning("RAWG details failed for id {Id}: {StatusCode}", id, res.StatusCode);
+            return null;
+        }
+
+        var game = await res.Content.ReadFromJsonAsync<RawgGame>(cancellationToken: ct);
+        return game;
+    }
 }
 
-// === RAWG DTO'ları (yalın) ===
-public sealed class RawgResponse { public List<RawgGame> Results { get; init; } = new(); }
+public sealed class RawgResponse 
+{ 
+    public List<RawgGame> Results { get; init; } = new();
+}
+
 public sealed class RawgGame
 {
     public int Id { get; init; }
@@ -62,11 +85,26 @@ public sealed class RawgGame
     public int Additions_Count { get; init; }
     public int? Metacritic { get; init; }
     public List<ParentPlatform> Parent_Platforms { get; init; } = new();
+    public List<Genre> Genres { get; init; } = new();     // detay ve liste endpointinde dolu gelebiliyor
+    public string? Description_Raw { get; init; }          // sadece /games/{id} endpointinde dolu
 }
-public sealed class ParentPlatform { public Platform Platform { get; init; } = new(); }
-public sealed class Platform { public string Slug { get; init; } = ""; }
 
-// === Resolver: "ilk kabul edilebilir" + hafif skor ===
+public sealed class ParentPlatform 
+{ 
+    public Platform Platform { get; init; } = new(); 
+}
+
+public sealed class Platform 
+{
+    public string Slug { get; init; } = ""; 
+}
+
+public sealed class Genre
+{
+    public int Id { get; init; }
+    public string Name { get; init; } = "";
+}
+
 public sealed class RawgResolver : IRawgResolver
 {
     private readonly IRawgClient _rawg;
@@ -83,7 +121,7 @@ public sealed class RawgResolver : IRawgResolver
     {
         var tasks = titles.Select(t => ResolveOneAsync(t, preferPlatform, ct));
         var results = await Task.WhenAll(tasks);
-        // null’ları at, id’ye göre deduplikasyon
+
         var uniq = results.Where(x => x is not null)
                           .GroupBy(x => x!.Id)
                           .Select(g => g.First()!)
@@ -103,9 +141,30 @@ public sealed class RawgResolver : IRawgResolver
             var chosen = list.FirstOrDefault(Acceptable);
             chosen ??= list.First(); // hiçbiri geçmezse en üsttekini yine al
 
+            RawgGame? details = null;
+            try
+            {
+                details = await _rawg.GetDetailsAsync(chosen.Id, ct);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogWarning(ex, "RAWG details threw for id {Id}", chosen.Id);
+            }
+
+            // details gelirse oradan, gelmezse chosen'dan oku
+            var info = details ?? chosen;
+
             var score = Rank(chosen, preferPlatform);
             var platformsCsv = string.Join(",",
                 chosen.Parent_Platforms.Select(p => p.Platform.Slug));
+
+            string? genresCsv = null;
+            if (info.Genres is { Count: > 0 })
+            {
+                genresCsv = string.Join(", ", info.Genres.Select(g => g.Name));
+            }
+
+            var descriptionRaw = info.Description_Raw;
 
             return new ResolvedGame(
                 chosen.Id,
@@ -114,7 +173,10 @@ public sealed class RawgResolver : IRawgResolver
                 chosen.Slug,
                 chosen.Background_Image,
                 score,
-                platformsCsv
+                platformsCsv,
+                info.Metacritic,
+                genresCsv,
+                descriptionRaw
             );
         }
         catch (Exception ex) when (ex is not OperationCanceledException)

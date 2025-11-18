@@ -3,19 +3,19 @@
     <form id="ai-form">
         <input id="ai-query"
                type="text"
-               placeholder="Ne oynamak istersin? Örn: 'ortaçağ, ejderha şart; büyücü olmasın'"
+               placeholder="What do you want to play?"
                autocomplete="off" />
         <button type="submit">Find Games</button>
     </form>
 
     <div id="ai-status" class="ai-status"></div>
-    <div id="ai-results" class="ai-results"></div>
+    <div id="ai-results" class="row row-cols-1 row-cols-sm-2 row-cols-md-3 row-cols-lg-4 row-cols-xl-5 g-3"></div>
 </div>
 
 <style>
     /* Bileşenin kutusu: ortalanmış, koyu tema kutu. */
     .ai-search {
-        max-width: 980px;
+        max-width: 1300px;
         margin: 24px auto;
         padding: 16px;
         border-radius: 16px;
@@ -72,73 +72,201 @@
     .ai-results {
         margin-top: 16px;
     }
+
+    /* Kart iskeleti */
+    .game-card {
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        border-radius: 1rem;
+        overflow: hidden;
+        border: 1px solid #333;
+        transition: transform 0.12s ease-out, box-shadow 0.12s ease-out, border-color 0.12s ease-out;
+    }
+
+        .game-card:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 10px 24px rgba(0,0,0,0.6);
+            border-color: #ff3b3b; /* o kırmızı accent */
+        }
+
+    /* Tüm kapak görselleri aynı oran ve boyuta gelsin */
+    .game-card img.game-cover {
+        width: 100%;
+        aspect-ratio: 16 / 9; /* veya 4/3 seversen onu yap */
+        object-fit: cover;
+        display: block;
+    }
+
+    /* Kart içeriği */
+    .game-card .card-body {
+        display: flex;
+        flex-direction: column;
+    }
+
+    .game-card .card-title {
+        font-size: 0.95rem;
+        font-weight: 600;
+    }
+
+    .game-card .meta-line {
+        font-size: 0.8rem;
+    }
+
+        .game-card .btn {
+            font-size: 0.85rem;
+        }
+
+            .game-card .btn:hover {
+                background-color: #ff3b3b;
+                border-color: #ff3b3b;
+                color: #fff;
+            }
+
+    .game-card .summary {
+        font-size: 0.8rem;
+    }
+
+    /* RAWG butonunun her zaman kartın en altında olması için */
+    .game-card .more-link-wrapper {
+        margin-top: auto;
+    }
+
+    .card-divider {
+        height: 2px;
+        width: 100%;
+        background: #ff3b3b; /* senin kırmızın */
+        border-radius: 999px; /* hafif yuvarlak uçlar */
+        opacity: 0.9;
+        margin: 0.35rem 0 0.6rem; /* üst-alt boşluk */
+    }
 </style>
 <script>
-    document.addEventListener('DOMContentLoaded', () => {
-      const form    = document.getElementById('ai-form');
-      const input   = document.getElementById('ai-query');
-      const status  = document.getElementById('ai-status');
-      const results = document.getElementById('ai-results');
+      document.addEventListener('DOMContentLoaded', () => {
+        const form    = document.getElementById('ai-form');
+        const input   = document.getElementById('ai-query');
+        const status  = document.getElementById('ai-status');
+        const results = document.getElementById('ai-results');
 
-      if (!form) {
-        console.error('ai-form not found');
-        return;
-      }
-
-      form.addEventListener('submit', async (e) => {
-        e.preventDefault();
-
-        const q = (input.value || '').trim();
-        if (!q) {
-          status.textContent = "Lütfen bir arama metni yaz.";
+        if (!form) {
+          console.error('ai-form not found');
           return;
         }
 
-        status.textContent = "Searching...";
-        results.innerHTML = "";
+        form.addEventListener('submit', async (e) => {
+          e.preventDefault();
 
-        try {
-          const resp = await fetch('/api/ai/search', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ query: q })
-          });
-
-          const data = await resp.json();
-
-          if (!resp.ok) {
-            status.textContent = data?.error || "Server error.";
+          const q = (input.value || '').trim();
+          if (!q) {
+            status.textContent = "Lütfen bir arama metni yaz.";
             return;
           }
 
-          // 🔹 Backend debug=false → direkt liste döner
-          // 🔹 Backend debug=true  → { results: [...] } döner
-          const games = Array.isArray(data)
-            ? data
-            : (data.results || data.items || []);
+          status.textContent = "Searching...";
+          results.innerHTML = "";
 
-          if (!games.length) {
-            status.textContent = "No games found.";
-            return;
+          try {
+            const resp = await fetch('/api/ai/search-cards', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ query: q }) // platform istersen ekleyebilirsin
+            });
+
+            let data = null;
+            try {
+              data = await resp.json();
+            } catch {
+              data = null;
+            }
+
+            if (!resp.ok) {
+              const msg = data && data.error ? data.error : "Server error.";
+              status.textContent = msg;
+              return;
+            }
+
+            if (!Array.isArray(data) || data.length === 0) {
+              status.textContent = "No games found.";
+              return;
+            }
+
+            // data: AiGameResultDto[]
+            data.forEach(game => {
+              const col = document.createElement('div');
+              col.className = 'col';
+
+              const title   = game.title  || 'Untitled';
+              const img     = game.imageUrl || '/images/placeholders/game-cover.png';
+              const year    = game.year   || '';
+              const genres  = game.genres || '';
+              const summary = game.summary || '';
+              const rawgUrl = game.rawgUrl || null;
+
+              col.innerHTML = `
+    <div class="card game-card shadow-sm bg-dark text-light">
+      <img src="${img}"
+           alt="${escapeHtml(title)}"
+           class="game-cover"
+           loading="lazy">
+
+      <div class="card-body">
+        <h5 class="card-title mb-1">${escapeHtml(title)}</h5>
+        
+        <div class="card-divider"></div>
+
+        <p class="meta-line text-light mb-1">
+          ${genres ? 'Genre: ' + escapeHtml(genres) : ''}
+          ${genres && year ? ' • ' : ''}
+          ${year ? 'Year: ' + year : ''}
+        </p>
+
+        <div class="card-divider"></div>
+
+        ${summary
+          ? `<p class="summary mb-2">${escapeHtml(summary)}</p>`
+          : ''
+        }
+
+        <div class="card-divider"></div>
+
+        ${rawgUrl
+          ? `
+          <div class="more-link-wrapper pt-2 ">
+            <a href="${rawgUrl}"
+               class="btn btn-sm btn-outline-light w-100 mt-2"
+               target="_blank"
+               rel="noopener">
+              More on RAWG
+            </a>
+          </div>`
+          : ''
+        }
+      </div>
+    </div>
+              `;
+
+              results.appendChild(col);
+            });
+
+            status.textContent = `Found ${data.length} games.`;
+          } catch (err) {
+            console.error(err);
+            status.textContent = "Network error.";
           }
+        });
 
-          games.forEach(item => {
-            const div = document.createElement('div');
-            div.className = 'ai-card';
-            div.innerHTML = `
-              <strong>${item.name}</strong><br>
-              <small>${item.why || ''}</small>
-            `;
-            results.appendChild(div);
-          });
-
-          status.textContent = `Found ${games.length} games`;
-        } catch (err) {
-          console.error(err);
-          status.textContent = "Network error.";
+        // Basit XSS koruması
+        function escapeHtml(str) {
+          if (!str) return '';
+          return String(str)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
         }
       });
-    });
 </script>
+
 
 

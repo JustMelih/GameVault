@@ -1,5 +1,4 @@
 using GameVault;
-using GameVault.Models;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using System.Net;
@@ -8,17 +7,6 @@ using System.Net;
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddControllersWithViews();
-
-builder.Services.AddIdentity<ApplicationUser, IdentityRole>(options =>
-{
-    options.Password.RequireDigit = true;
-    options.Password.RequiredLength = 6;
-    options.Password.RequireNonAlphanumeric = true;
-    options.User.RequireUniqueEmail = true;
-})
-.AddEntityFrameworkStores<ApplicationDbContext>()
-.AddDefaultTokenProviders();
-
 builder.Services.ConfigureApplicationCookie(options =>
 {
     options.LoginPath = "/Account/Login";
@@ -52,6 +40,18 @@ builder.Services.AddHttpClient<ITitleIntentService, TitleIntentService>(client =
 {
     AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate
 });
+// --- YENÝ: AI özet servisi (kýsa açýklama cümleleri) ---
+builder.Services.AddHttpClient<IGameSummaryService, GameSummaryService>(client =>
+{
+    var baseUrl = builder.Configuration["OpenAI:BaseUrl"] ?? "https://api.openai.com/v1/";
+    if (!baseUrl.EndsWith("/")) baseUrl += "/";
+    client.BaseAddress = new Uri(baseUrl);
+    client.Timeout = TimeSpan.FromSeconds(40); // search titles kadar uzun olmasýna gerek yok
+})
+.ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
+{
+    AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate
+});
 
 // --- YENÝ: RAWG baþlýk çözümleyici (ilk kabul edilebilir sonucu seçer) ---
 builder.Services.AddSingleton<IRawgResolver, RawgResolver>();
@@ -59,9 +59,6 @@ builder.Services.AddSingleton<IRawgResolver, RawgResolver>();
 // --- DB ---
 var connectionString = builder.Configuration.GetConnectionString("DefaultConnection")
     ?? throw new InvalidOperationException("Connection string 'DefaultConnection' not found.");
-
-builder.Services.AddDbContext<ApplicationDbContext>(options =>
-    options.UseSqlServer(connectionString));
 
 var app = builder.Build();
 
@@ -74,11 +71,5 @@ app.UseAuthorization();
 app.MapControllerRoute(
     name: "default",
     pattern: "{controller=Home}/{action=Index}/{id?}");
-
-using (var scope = app.Services.CreateScope())
-{
-    var services = scope.ServiceProvider;
-    RoleSeeder.SeedAsync(services).GetAwaiter().GetResult();
-}
 
 app.Run();
