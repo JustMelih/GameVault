@@ -38,7 +38,7 @@ Bootstrap (frontend)
 
 HOW TO RUN:
 
-https://gamevaultweb.azurewebsites.net/
+https://gamevaultweb.azurewebsites.net/  (it's slow because i use free plan) :(
 
 NOTES:
 
